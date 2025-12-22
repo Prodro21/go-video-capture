@@ -1,0 +1,40 @@
+# go-video-capture default configuration
+
+input:
+  type: decklink          # decklink, ndi, v4l2, avfoundation, dshow, screen
+  device: "0"             # Device identifier
+  resolution: 1920x1080
+  framerate: 60
+
+buffer:
+  duration: 30m           # Keep 30 minutes in ring buffer
+  segment_size: 2s        # 2-second CMAF segments
+  path: /data/buffer
+  max_size: 8GB
+
+encode:
+  type: software          # software, nvenc, qsv, videotoolbox
+  codec: h264
+  preset: fast
+  bitrate: 5500           # kbps
+  gop: 60                 # Keyframe every 60 frames (1 sec at 60fps)
+
+hls:
+  enabled: true
+  path: /data/hls
+  port: 8080
+
+api:
+  host: "0.0.0.0"
+  port: 8080
+
+# Optional platform integration (set by operator-console)
+platform:
+  enabled: false
+  url: ""
+  api_key: ${PLATFORM_API_KEY}
+
+# Runtime session info (set by operator-console)
+session:
+  session_id: ""
+  channel_id: ""
