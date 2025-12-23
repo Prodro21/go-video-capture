@@ -186,7 +186,7 @@ func (sw *SegmentWriter) buildArgs() []string {
 		"-f", "dash",
 		"-seg_duration", fmt.Sprintf("%.1f", cfg.SegmentDuration),
 		"-init_seg_name", "init.mp4",
-		"-media_seg_name", "segment_%05d.m4s",
+		"-media_seg_name", "segment_$Number%05d$.m4s",
 		"-use_template", "1",
 		"-use_timeline", "0",
 		"-hls_playlist", "1",
@@ -287,33 +287,54 @@ func (f *FFmpeg) GenerateSegmentsFromFile(ctx context.Context, inputPath, output
 	return sw.Wait()
 }
 
-// ConcatSegments concatenates multiple segments into a single MP4
+// ConcatSegments concatenates multiple CMAF segments into a single MP4
+// For fMP4/CMAF, we need to combine init.mp4 + segments and re-encode to get proper metadata
 func (f *FFmpeg) ConcatSegments(ctx context.Context, initPath string, segments []string, outputPath string) error {
-	// Create temp concat file
-	tmpFile, err := os.CreateTemp("", "concat_*.txt")
+	// For CMAF segments, we need to create a combined fMP4 file first
+	// by concatenating init.mp4 + all segment files at the binary level
+	tmpCombined, err := os.CreateTemp("", "combined_*.mp4")
 	if err != nil {
 		return fmt.Errorf("create temp file: %w", err)
 	}
-	defer os.Remove(tmpFile.Name())
+	defer os.Remove(tmpCombined.Name())
 
-	// Write segment list
-	for _, seg := range segments {
-		fmt.Fprintf(tmpFile, "file '%s'\n", seg)
+	// Write init segment first
+	initData, err := os.ReadFile(initPath)
+	if err != nil {
+		return fmt.Errorf("read init segment: %w", err)
 	}
-	tmpFile.Close()
+	if _, err := tmpCombined.Write(initData); err != nil {
+		return fmt.Errorf("write init segment: %w", err)
+	}
 
+	// Append each media segment
+	for _, seg := range segments {
+		segData, err := os.ReadFile(seg)
+		if err != nil {
+			return fmt.Errorf("read segment %s: %w", seg, err)
+		}
+		if _, err := tmpCombined.Write(segData); err != nil {
+			return fmt.Errorf("write segment: %w", err)
+		}
+	}
+	tmpCombined.Close()
+
+	// Remux fMP4 to standard MP4 - we need to re-encode to get proper moov/duration
+	// Using ultrafast preset for speed since we're just fixing the container
 	args := []string{
 		"-y",
-		"-f", "concat",
-		"-safe", "0",
-		"-i", tmpFile.Name(),
-		"-c", "copy",
+		"-i", tmpCombined.Name(),
+		"-c:v", "libx264",
+		"-preset", "ultrafast",
+		"-crf", "18",
+		"-c:a", "aac",
+		"-movflags", "+faststart",
 		outputPath,
 	}
 
 	cmd := exec.CommandContext(ctx, f.binaryPath, args...)
 	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("ffmpeg concat: %w\noutput: %s", err, output)
+		return fmt.Errorf("ffmpeg remux: %w\noutput: %s", err, output)
 	}
 
 	return nil
