@@ -48,6 +48,16 @@ type UploadResult struct {
 	FilePath string      `json:"file_path"`
 }
 
+// SegmentNotification represents a segment ready notification for ghost clips
+type SegmentNotification struct {
+	PlayID     string `json:"play_id"`
+	ChannelID  string `json:"channel_id"`
+	SegmentURL string `json:"segment_url"`
+	Sequence   int    `json:"sequence"`
+	Timestamp  int64  `json:"timestamp"`
+	IsFinal    bool   `json:"is_final"`
+}
+
 // New creates a new platform client
 func New(cfg Config) *Client {
 	return &Client{
@@ -194,6 +204,42 @@ func (c *Client) CheckUploadStatus(ctx context.Context) error {
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("upload not ready (status %d)", resp.StatusCode)
+	}
+
+	return nil
+}
+
+// NotifySegmentReady notifies the platform of a new segment during a ghost clip
+func (c *Client) NotifySegmentReady(ctx context.Context, notification SegmentNotification) error {
+	if !c.IsConfigured() {
+		return nil // Silent skip if platform not configured
+	}
+
+	body, err := json.Marshal(notification)
+	if err != nil {
+		return fmt.Errorf("marshal notification: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/api/v1/segments/notify", c.baseURL)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	if c.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("execute request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("notification failed (status %d): %s", resp.StatusCode, string(respBody))
 	}
 
 	return nil

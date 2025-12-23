@@ -74,9 +74,31 @@ func NewChannel(id string, cfg ChannelConfig, ff *ffmpeg.FFmpeg, platformClient 
 			id, seg.Sequence, seg.FilePath, float64(seg.SizeBytes)/1024)
 	})
 
-	// Set up ghost segment callback
+	// Set up ghost segment callback - notify platform of each segment during ghost clip
 	buffer.OnGhostSegment(func(playID string, seg *ringbuffer.Segment) {
 		log.Printf("[%s] Ghost segment for %s: seq=%d", id, playID, seg.Sequence)
+
+		// Notify platform of segment (non-blocking)
+		if ch.platform != nil && ch.platform.IsConfigured() {
+			go func() {
+				notifyCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+
+				// Build segment URL (HLS path on this capture machine)
+				segmentURL := fmt.Sprintf("/hls/%s/segment_%05d.m4s", id, seg.Sequence)
+
+				if err := ch.platform.NotifySegmentReady(notifyCtx, platform.SegmentNotification{
+					PlayID:     playID,
+					ChannelID:  id,
+					SegmentURL: segmentURL,
+					Sequence:   seg.Sequence,
+					Timestamp:  seg.StartTime.UnixMilli(),
+					IsFinal:    false,
+				}); err != nil {
+					log.Printf("[%s] Failed to notify platform of segment: %v", id, err)
+				}
+			}()
+		}
 	})
 
 	return ch, nil
@@ -254,6 +276,31 @@ func (ch *Channel) EndGhostClipAndGenerate(ctx context.Context, playID string, t
 	ghostResult, err := ch.buffer.EndGhostClip(playID)
 	if err != nil {
 		return nil, err
+	}
+
+	// Send final segment notification to platform (IsFinal = true)
+	if ch.platform != nil && ch.platform.IsConfigured() {
+		go func() {
+			notifyCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			// Use the last segment's sequence for the final notification
+			lastSeq := 0
+			if len(ghostResult.Segments) > 0 {
+				lastSeq = ghostResult.Segments[len(ghostResult.Segments)-1]
+			}
+
+			if err := ch.platform.NotifySegmentReady(notifyCtx, platform.SegmentNotification{
+				PlayID:     playID,
+				ChannelID:  ch.id,
+				SegmentURL: fmt.Sprintf("/hls/%s/segment_%05d.m4s", ch.id, lastSeq),
+				Sequence:   lastSeq,
+				Timestamp:  ghostResult.EndTime.UnixMilli(),
+				IsFinal:    true,
+			}); err != nil {
+				log.Printf("[%s] Failed to send final segment notification: %v", ch.id, err)
+			}
+		}()
 	}
 
 	// Generate clip from the tracked segments
