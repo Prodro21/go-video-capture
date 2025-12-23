@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/video-system/go-video-capture/pkg/api"
 	"github.com/video-system/go-video-capture/pkg/capture"
 )
 
@@ -21,10 +22,10 @@ func main() {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	// Create capture engine
-	engine, err := capture.New(cfg)
+	// Create channel manager
+	manager, err := capture.NewManager(cfg)
 	if err != nil {
-		log.Fatalf("Failed to create capture engine: %v", err)
+		log.Fatalf("Failed to create manager: %v", err)
 	}
 
 	// Setup graceful shutdown
@@ -40,10 +41,30 @@ func main() {
 		cancel()
 	}()
 
-	// Start capture
-	if err := engine.Start(ctx); err != nil {
-		log.Fatalf("Capture failed: %v", err)
+	// Start all channels
+	if err := manager.Start(ctx); err != nil {
+		log.Fatalf("Failed to start channels: %v", err)
 	}
+
+	// Create and start API server
+	apiServer := api.NewServer(api.ServerConfig{
+		Host:    cfg.API.Host,
+		Port:    cfg.API.Port,
+		Manager: manager,
+	})
+
+	go func() {
+		if err := apiServer.Start(); err != nil {
+			log.Printf("API server error: %v", err)
+		}
+	}()
+
+	// Wait for shutdown
+	manager.Wait()
+
+	// Cleanup
+	manager.Stop()
+	apiServer.Stop()
 
 	log.Println("Capture stopped")
 }

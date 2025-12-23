@@ -10,13 +10,24 @@ import (
 
 // Config holds all capture configuration
 type Config struct {
-	Input    InputConfig    `yaml:"input"`
-	Buffer   BufferConfig   `yaml:"buffer"`
-	Encode   EncodeConfig   `yaml:"encode"`
+	// Single-channel mode (backwards compatible)
+	Input  InputConfig  `yaml:"input"`
+	Buffer BufferConfig `yaml:"buffer"`
+	Encode EncodeConfig `yaml:"encode"`
+
+	// Multi-channel mode
+	Channels []ChannelConfig `yaml:"channels"`
+
+	// Shared configuration
 	HLS      HLSConfig      `yaml:"hls"`
 	API      APIConfig      `yaml:"api"`
 	Platform PlatformConfig `yaml:"platform"`
 	Session  SessionConfig  `yaml:"session"`
+}
+
+// IsMultiChannel returns true if multiple channels are configured
+func (c *Config) IsMultiChannel() bool {
+	return len(c.Channels) > 0
 }
 
 // InputConfig configures the video input source
@@ -85,7 +96,7 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
 
-	// Set defaults
+	// Set defaults for single-channel mode
 	if cfg.Buffer.Duration == 0 {
 		cfg.Buffer.Duration = 30 * time.Minute
 	}
@@ -100,6 +111,35 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if cfg.API.Port == 0 {
 		cfg.API.Port = 8080
+	}
+
+	// Set defaults for multi-channel mode
+	for i := range cfg.Channels {
+		ch := &cfg.Channels[i]
+		if ch.Buffer.Duration == 0 {
+			ch.Buffer.Duration = cfg.Buffer.Duration
+			if ch.Buffer.Duration == 0 {
+				ch.Buffer.Duration = 30 * time.Minute
+			}
+		}
+		if ch.Buffer.SegmentSize == 0 {
+			ch.Buffer.SegmentSize = cfg.Buffer.SegmentSize
+			if ch.Buffer.SegmentSize == 0 {
+				ch.Buffer.SegmentSize = 2 * time.Second
+			}
+		}
+		if ch.Encode.Preset == "" {
+			ch.Encode.Preset = cfg.Encode.Preset
+			if ch.Encode.Preset == "" {
+				ch.Encode.Preset = "fast"
+			}
+		}
+		if ch.Encode.GOP == 0 {
+			ch.Encode.GOP = cfg.Encode.GOP
+			if ch.Encode.GOP == 0 {
+				ch.Encode.GOP = 60
+			}
+		}
 	}
 
 	return &cfg, nil

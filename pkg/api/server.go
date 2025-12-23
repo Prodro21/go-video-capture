@@ -6,27 +6,38 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 )
 
-// CaptureEngine interface for the capture engine
-type CaptureEngine interface {
+// ChannelInterface defines operations available on a single channel
+type ChannelInterface interface {
+	ID() string
 	GetStatus() interface{}
-	SetSession(sessionID, channelID string)
-	GenerateClip(ctx context.Context, req interface{}) (interface{}, error)
+	SetSession(sessionID string)
 	StartGhostClip(playID string) error
 	EndGhostClip(playID string) error
 	EndGhostClipAndGenerate(ctx context.Context, playID string, tags map[string]interface{}) (interface{}, error)
+	GenerateClip(ctx context.Context, startTime, endTime int64, playID string) (interface{}, error)
 	GetHLSPlaylist() ([]byte, error)
 	GetSegmentPath() string
 	GetInitSegmentPath() string
 }
 
+// ChannelManager defines operations for managing multiple channels
+type ChannelManager interface {
+	GetChannel(id string) (ChannelInterface, bool)
+	GetDefaultChannel() (ChannelInterface, bool)
+	ListChannels() []string
+	GetAllStatuses() map[string]interface{}
+	SetSession(sessionID string)
+}
+
 // ServerConfig holds API server configuration
 type ServerConfig struct {
-	Host   string
-	Port   int
-	Engine CaptureEngine
+	Host    string
+	Port    int
+	Manager ChannelManager
 }
 
 // Server is the HTTP API server
@@ -40,17 +51,27 @@ func NewServer(cfg ServerConfig) *Server {
 	s := &Server{cfg: cfg}
 
 	mux := http.NewServeMux()
+
+	// Health check
 	mux.HandleFunc("/health", s.handleHealth)
-	mux.HandleFunc("/api/v1/status", s.handleStatus)
-	mux.HandleFunc("/api/v1/config", s.handleConfig)
-	mux.HandleFunc("/api/v1/mark/in", s.handleMarkIn)
-	mux.HandleFunc("/api/v1/mark/out", s.handleMarkOut)
-	mux.HandleFunc("/api/v1/clip", s.handleClip)
-	mux.HandleFunc("/api/v1/clip/quick", s.handleQuickClip)
-	mux.HandleFunc("/api/v1/buffer/status", s.handleBufferStatus)
-	// HLS streaming endpoints
-	mux.HandleFunc("/hls/live.m3u8", s.handleHLSPlaylist)
-	mux.HandleFunc("/hls/", s.handleHLSSegment)
+
+	// List all channels
+	mux.HandleFunc("/api/v1/channels", s.handleListChannels)
+
+	// Channel-specific routes (must come before legacy routes for proper matching)
+	mux.HandleFunc("/api/v1/channels/", s.handleChannelRoute)
+
+	// HLS per-channel routes
+	mux.HandleFunc("/hls/", s.handleHLS)
+
+	// Legacy single-channel routes (backwards compatible)
+	mux.HandleFunc("/api/v1/status", s.handleLegacyStatus)
+	mux.HandleFunc("/api/v1/config", s.handleLegacyConfig)
+	mux.HandleFunc("/api/v1/mark/in", s.handleLegacyMarkIn)
+	mux.HandleFunc("/api/v1/mark/out", s.handleLegacyMarkOut)
+	mux.HandleFunc("/api/v1/clip", s.handleLegacyClip)
+	mux.HandleFunc("/api/v1/clip/quick", s.handleLegacyQuickClip)
+	mux.HandleFunc("/api/v1/buffer/status", s.handleLegacyBufferStatus)
 
 	s.server = &http.Server{
 		Addr:    fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
@@ -74,41 +95,82 @@ func (s *Server) Stop() {
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	json.NewEncoder(w).Encode(map[string]string{
-		"status":  "healthy",
-		"service": "go-video-capture",
+	channels := s.cfg.Manager.ListChannels()
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":        "healthy",
+		"service":       "go-video-capture",
+		"channel_count": len(channels),
 	})
 }
 
-func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
+// handleListChannels returns all channel IDs and their statuses
+func (s *Server) handleListChannels(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	status := s.cfg.Engine.GetStatus()
-	json.NewEncoder(w).Encode(status)
+
+	channels := s.cfg.Manager.ListChannels()
+	statuses := s.cfg.Manager.GetAllStatuses()
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"channels": channels,
+		"statuses": statuses,
+	})
 }
 
-func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
+// handleChannelRoute routes /api/v1/channels/{id}/... to the appropriate handler
+func (s *Server) handleChannelRoute(w http.ResponseWriter, r *http.Request) {
+	// Parse: /api/v1/channels/{id}/{action}
+	path := strings.TrimPrefix(r.URL.Path, "/api/v1/channels/")
+	parts := strings.SplitN(path, "/", 2)
+
+	if len(parts) == 0 || parts[0] == "" {
+		http.Error(w, "Channel ID required", http.StatusBadRequest)
+		return
+	}
+
+	channelID := parts[0]
+	action := ""
+	if len(parts) > 1 {
+		action = parts[1]
+	}
+
+	// Get the channel
+	ch, ok := s.cfg.Manager.GetChannel(channelID)
+	if !ok {
+		http.Error(w, fmt.Sprintf("Channel not found: %s", channelID), http.StatusNotFound)
+		return
+	}
+
+	// Route to action
+	switch {
+	case action == "status" || action == "":
+		s.handleChannelStatus(w, r, ch)
+	case action == "mark/in":
+		s.handleChannelMarkIn(w, r, ch)
+	case action == "mark/out":
+		s.handleChannelMarkOut(w, r, ch)
+	case action == "clip":
+		s.handleChannelClip(w, r, ch)
+	case action == "clip/quick":
+		s.handleChannelQuickClip(w, r, ch)
+	case action == "buffer/status":
+		s.handleChannelStatus(w, r, ch)
+	default:
+		http.Error(w, fmt.Sprintf("Unknown action: %s", action), http.StatusNotFound)
+	}
+}
+
+func (s *Server) handleChannelStatus(w http.ResponseWriter, r *http.Request, ch ChannelInterface) {
+	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-
-	var req struct {
-		SessionID string `json:"session_id"`
-		ChannelID string `json:"channel_id"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	s.cfg.Engine.SetSession(req.SessionID, req.ChannelID)
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	json.NewEncoder(w).Encode(ch.GetStatus())
 }
 
-func (s *Server) handleMarkIn(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleChannelMarkIn(w http.ResponseWriter, r *http.Request, ch ChannelInterface) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -122,19 +184,20 @@ func (s *Server) handleMarkIn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.cfg.Engine.StartGhostClip(req.PlayID); err != nil {
+	if err := ch.StartGhostClip(req.PlayID); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":    "ok",
-		"play_id":   req.PlayID,
-		"timestamp": time.Now().UnixMilli(),
+		"status":     "ok",
+		"channel_id": ch.ID(),
+		"play_id":    req.PlayID,
+		"timestamp":  time.Now().UnixMilli(),
 	})
 }
 
-func (s *Server) handleMarkOut(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleChannelMarkOut(w http.ResponseWriter, r *http.Request, ch ChannelInterface) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -150,38 +213,37 @@ func (s *Server) handleMarkOut(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Default to generating clip
 	if req.GenerateClip || req.Tags != nil {
-		// End ghost clip AND generate clip
-		result, err := s.cfg.Engine.EndGhostClipAndGenerate(r.Context(), req.PlayID, req.Tags)
+		result, err := ch.EndGhostClipAndGenerate(r.Context(), req.PlayID, req.Tags)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"status":    "ok",
-			"play_id":   req.PlayID,
-			"timestamp": time.Now().UnixMilli(),
-			"clip":      result,
+			"status":     "ok",
+			"channel_id": ch.ID(),
+			"play_id":    req.PlayID,
+			"timestamp":  time.Now().UnixMilli(),
+			"clip":       result,
 		})
 		return
 	}
 
-	// Just end the ghost clip without generating
-	if err := s.cfg.Engine.EndGhostClip(req.PlayID); err != nil {
+	if err := ch.EndGhostClip(req.PlayID); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":    "ok",
-		"play_id":   req.PlayID,
-		"timestamp": time.Now().UnixMilli(),
+		"status":     "ok",
+		"channel_id": ch.ID(),
+		"play_id":    req.PlayID,
+		"timestamp":  time.Now().UnixMilli(),
 	})
 }
 
-func (s *Server) handleClip(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleChannelClip(w http.ResponseWriter, r *http.Request, ch ChannelInterface) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -197,13 +259,7 @@ func (s *Server) handleClip(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	clipReq := map[string]interface{}{
-		"start_time": float64(req.StartTime),
-		"end_time":   float64(req.EndTime),
-		"play_id":    req.PlayID,
-	}
-
-	result, err := s.cfg.Engine.GenerateClip(r.Context(), clipReq)
+	result, err := ch.GenerateClip(r.Context(), req.StartTime, req.EndTime, req.PlayID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -212,7 +268,7 @@ func (s *Server) handleClip(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(result)
 }
 
-func (s *Server) handleQuickClip(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleChannelQuickClip(w http.ResponseWriter, r *http.Request, ch ChannelInterface) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -227,23 +283,14 @@ func (s *Server) handleQuickClip(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Default to 15 seconds if not specified
 	if req.DurationSeconds <= 0 {
 		req.DurationSeconds = 15
 	}
 
-	// Calculate time range: now - duration to now
 	endTime := time.Now().UnixMilli()
 	startTime := endTime - int64(req.DurationSeconds*1000)
 
-	// Generate clip request
-	clipReq := map[string]interface{}{
-		"start_time": float64(startTime),
-		"end_time":   float64(endTime),
-		"play_id":    req.PlayID,
-	}
-
-	result, err := s.cfg.Engine.GenerateClip(r.Context(), clipReq)
+	result, err := ch.GenerateClip(r.Context(), startTime, endTime, req.PlayID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -252,44 +299,57 @@ func (s *Server) handleQuickClip(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(result)
 }
 
-func (s *Server) handleBufferStatus(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	status := s.cfg.Engine.GetStatus()
-	json.NewEncoder(w).Encode(status)
-}
-
-func (s *Server) handleHLSPlaylist(w http.ResponseWriter, r *http.Request) {
+// handleHLS routes HLS requests to the appropriate channel
+// Supports: /hls/{channelID}/live.m3u8, /hls/{channelID}/init.mp4, /hls/{channelID}/segment_*.m4s
+// Also supports legacy: /hls/live.m3u8 (uses default channel)
+func (s *Server) handleHLS(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	playlist, err := s.cfg.Engine.GetHLSPlaylist()
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	path := strings.TrimPrefix(r.URL.Path, "/hls/")
+	parts := strings.SplitN(path, "/", 2)
+
+	var ch ChannelInterface
+	var segName string
+
+	if len(parts) == 1 {
+		// Legacy: /hls/live.m3u8 or /hls/segment_00001.m4s
+		var ok bool
+		ch, ok = s.cfg.Manager.GetDefaultChannel()
+		if !ok {
+			http.Error(w, "No default channel available", http.StatusNotFound)
+			return
+		}
+		segName = parts[0]
+	} else {
+		// Multi-channel: /hls/{channelID}/live.m3u8
+		channelID := parts[0]
+		var ok bool
+		ch, ok = s.cfg.Manager.GetChannel(channelID)
+		if !ok {
+			http.Error(w, fmt.Sprintf("Channel not found: %s", channelID), http.StatusNotFound)
+			return
+		}
+		segName = parts[1]
+	}
+
+	// Handle playlist
+	if segName == "live.m3u8" {
+		playlist, err := ch.GetHLSPlaylist()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Write(playlist)
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
-	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Write(playlist)
-}
-
-func (s *Server) handleHLSSegment(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	// Extract segment name from path: /hls/segment_00001.m4s or /hls/init.mp4
-	path := r.URL.Path
-	segName := path[len("/hls/"):]
-
-	// Security: prevent directory traversal
+	// Handle segments
 	if len(segName) == 0 || segName[0] == '/' || segName[0] == '.' {
 		http.Error(w, "Invalid segment name", http.StatusBadRequest)
 		return
@@ -297,18 +357,92 @@ func (s *Server) handleHLSSegment(w http.ResponseWriter, r *http.Request) {
 
 	var filePath string
 	if segName == "init.mp4" {
-		filePath = s.cfg.Engine.GetInitSegmentPath()
+		filePath = ch.GetInitSegmentPath()
 	} else {
-		filePath = s.cfg.Engine.GetSegmentPath() + "/" + segName
+		filePath = ch.GetSegmentPath() + "/" + segName
 	}
 
-	// Set appropriate content type
 	contentType := "video/mp4"
-	if len(segName) > 4 && segName[len(segName)-4:] == ".m4s" {
+	if strings.HasSuffix(segName, ".m4s") {
 		contentType = "video/iso.segment"
 	}
 
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	http.ServeFile(w, r, filePath)
+}
+
+// Legacy handlers - delegate to default channel
+
+func (s *Server) handleLegacyStatus(w http.ResponseWriter, r *http.Request) {
+	ch, ok := s.cfg.Manager.GetDefaultChannel()
+	if !ok {
+		http.Error(w, "No channel available", http.StatusNotFound)
+		return
+	}
+	s.handleChannelStatus(w, r, ch)
+}
+
+func (s *Server) handleLegacyConfig(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		SessionID string `json:"session_id"`
+		ChannelID string `json:"channel_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	s.cfg.Manager.SetSession(req.SessionID)
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleLegacyMarkIn(w http.ResponseWriter, r *http.Request) {
+	ch, ok := s.cfg.Manager.GetDefaultChannel()
+	if !ok {
+		http.Error(w, "No channel available", http.StatusNotFound)
+		return
+	}
+	s.handleChannelMarkIn(w, r, ch)
+}
+
+func (s *Server) handleLegacyMarkOut(w http.ResponseWriter, r *http.Request) {
+	ch, ok := s.cfg.Manager.GetDefaultChannel()
+	if !ok {
+		http.Error(w, "No channel available", http.StatusNotFound)
+		return
+	}
+	s.handleChannelMarkOut(w, r, ch)
+}
+
+func (s *Server) handleLegacyClip(w http.ResponseWriter, r *http.Request) {
+	ch, ok := s.cfg.Manager.GetDefaultChannel()
+	if !ok {
+		http.Error(w, "No channel available", http.StatusNotFound)
+		return
+	}
+	s.handleChannelClip(w, r, ch)
+}
+
+func (s *Server) handleLegacyQuickClip(w http.ResponseWriter, r *http.Request) {
+	ch, ok := s.cfg.Manager.GetDefaultChannel()
+	if !ok {
+		http.Error(w, "No channel available", http.StatusNotFound)
+		return
+	}
+	s.handleChannelQuickClip(w, r, ch)
+}
+
+func (s *Server) handleLegacyBufferStatus(w http.ResponseWriter, r *http.Request) {
+	ch, ok := s.cfg.Manager.GetDefaultChannel()
+	if !ok {
+		http.Error(w, "No channel available", http.StatusNotFound)
+		return
+	}
+	s.handleChannelStatus(w, r, ch)
 }
