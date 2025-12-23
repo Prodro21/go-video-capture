@@ -16,6 +16,7 @@ type CaptureEngine interface {
 	GenerateClip(ctx context.Context, req interface{}) (interface{}, error)
 	StartGhostClip(playID string) error
 	EndGhostClip(playID string) error
+	EndGhostClipAndGenerate(ctx context.Context, playID string, tags map[string]interface{}) (interface{}, error)
 }
 
 // ServerConfig holds API server configuration
@@ -42,6 +43,7 @@ func NewServer(cfg ServerConfig) *Server {
 	mux.HandleFunc("/api/v1/mark/in", s.handleMarkIn)
 	mux.HandleFunc("/api/v1/mark/out", s.handleMarkOut)
 	mux.HandleFunc("/api/v1/clip", s.handleClip)
+	mux.HandleFunc("/api/v1/clip/quick", s.handleQuickClip)
 	mux.HandleFunc("/api/v1/buffer/status", s.handleBufferStatus)
 
 	s.server = &http.Server{
@@ -133,13 +135,34 @@ func (s *Server) handleMarkOut(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		PlayID string `json:"play_id"`
+		PlayID       string                 `json:"play_id"`
+		GenerateClip bool                   `json:"generate_clip"`
+		Tags         map[string]interface{} `json:"tags,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
+	// Default to generating clip
+	if req.GenerateClip || req.Tags != nil {
+		// End ghost clip AND generate clip
+		result, err := s.cfg.Engine.EndGhostClipAndGenerate(r.Context(), req.PlayID, req.Tags)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"status":    "ok",
+			"play_id":   req.PlayID,
+			"timestamp": time.Now().UnixMilli(),
+			"clip":      result,
+		})
+		return
+	}
+
+	// Just end the ghost clip without generating
 	if err := s.cfg.Engine.EndGhostClip(req.PlayID); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -168,7 +191,53 @@ func (s *Server) handleClip(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := s.cfg.Engine.GenerateClip(r.Context(), req)
+	clipReq := map[string]interface{}{
+		"start_time": float64(req.StartTime),
+		"end_time":   float64(req.EndTime),
+		"play_id":    req.PlayID,
+	}
+
+	result, err := s.cfg.Engine.GenerateClip(r.Context(), clipReq)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	json.NewEncoder(w).Encode(result)
+}
+
+func (s *Server) handleQuickClip(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		DurationSeconds int    `json:"duration_seconds"`
+		PlayID          string `json:"play_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Default to 15 seconds if not specified
+	if req.DurationSeconds <= 0 {
+		req.DurationSeconds = 15
+	}
+
+	// Calculate time range: now - duration to now
+	endTime := time.Now().UnixMilli()
+	startTime := endTime - int64(req.DurationSeconds*1000)
+
+	// Generate clip request
+	clipReq := map[string]interface{}{
+		"start_time": float64(startTime),
+		"end_time":   float64(endTime),
+		"play_id":    req.PlayID,
+	}
+
+	result, err := s.cfg.Engine.GenerateClip(r.Context(), clipReq)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

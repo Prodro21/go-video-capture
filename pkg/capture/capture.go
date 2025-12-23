@@ -8,16 +8,18 @@ import (
 
 	"github.com/video-system/go-video-capture/internal/ffmpeg"
 	"github.com/video-system/go-video-capture/pkg/api"
+	"github.com/video-system/go-video-capture/pkg/platform"
 	"github.com/video-system/go-video-capture/pkg/ringbuffer"
 )
 
 // Engine is the main capture engine
 type Engine struct {
-	cfg    *Config
-	ffmpeg *ffmpeg.FFmpeg
-	buffer *ringbuffer.Buffer
-	writer *ffmpeg.SegmentWriter
-	api    *api.Server
+	cfg      *Config
+	ffmpeg   *ffmpeg.FFmpeg
+	buffer   *ringbuffer.Buffer
+	writer   *ffmpeg.SegmentWriter
+	api      *api.Server
+	platform *platform.Client
 
 	mu        sync.RWMutex
 	isRunning bool
@@ -55,10 +57,21 @@ func New(cfg *Config) (*Engine, error) {
 		return nil, fmt.Errorf("create ring buffer: %w", err)
 	}
 
+	// Create platform client if configured
+	var platformClient *platform.Client
+	if cfg.Platform.Enabled && cfg.Platform.URL != "" {
+		platformClient = platform.New(platform.Config{
+			URL:    cfg.Platform.URL,
+			APIKey: cfg.Platform.APIKey,
+		})
+		log.Printf("Platform integration enabled: %s", cfg.Platform.URL)
+	}
+
 	engine := &Engine{
 		cfg:       cfg,
 		ffmpeg:    ff,
 		buffer:    buffer,
+		platform:  platformClient,
 		sessionID: cfg.Session.SessionID,
 		channelID: cfg.Session.ChannelID,
 	}
@@ -264,12 +277,27 @@ func (e *Engine) GenerateClip(ctx context.Context, req interface{}) (interface{}
 		return nil, err
 	}
 
-	return ClipResult{
+	clipResult := ClipResult{
 		FilePath:      result.FilePath,
 		Duration:      result.Duration,
 		FileSizeBytes: result.FileSizeBytes,
 		SegmentCount:  result.SegmentCount,
-	}, nil
+	}
+
+	// Upload to platform if configured
+	if e.platform != nil && e.platform.IsConfigured() {
+		go e.uploadClipToPlatform(ctx, result.FilePath, platform.ClipMetadata{
+			SessionID:       e.sessionID,
+			ChannelID:       e.channelID,
+			PlayID:          clipReq.PlayID,
+			StartTime:       clipReq.StartTime,
+			EndTime:         clipReq.EndTime,
+			DurationSeconds: result.Duration,
+			FileSizeBytes:   result.FileSizeBytes,
+		})
+	}
+
+	return clipResult, nil
 }
 
 // StartGhostClip starts ghost-clipping mode for a play
@@ -281,6 +309,65 @@ func (e *Engine) StartGhostClip(playID string) error {
 func (e *Engine) EndGhostClip(playID string) error {
 	_, err := e.buffer.EndGhostClip(playID)
 	return err
+}
+
+// EndGhostClipAndGenerate ends ghost-clipping and generates the clip
+func (e *Engine) EndGhostClipAndGenerate(ctx context.Context, playID string, tags map[string]interface{}) (interface{}, error) {
+	// End ghost clip to get time range
+	ghostResult, err := e.buffer.EndGhostClip(playID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Generate clip from the time range
+	startMs := ghostResult.StartTime.UnixMilli()
+	endMs := ghostResult.EndTime.UnixMilli()
+
+	clipResult, err := e.buffer.GenerateClip(ctx, startMs, endMs, playID)
+	if err != nil {
+		return nil, fmt.Errorf("generate clip: %w", err)
+	}
+
+	result := ClipResultWithTags{
+		ClipResult: ClipResult{
+			FilePath:      clipResult.FilePath,
+			Duration:      clipResult.Duration,
+			FileSizeBytes: clipResult.FileSizeBytes,
+			SegmentCount:  clipResult.SegmentCount,
+		},
+		PlayID:    playID,
+		StartTime: startMs,
+		EndTime:   endMs,
+		Tags:      tags,
+		ChannelID: e.channelID,
+		SessionID: e.sessionID,
+	}
+
+	// Upload to platform if configured
+	if e.platform != nil && e.platform.IsConfigured() {
+		go e.uploadClipToPlatform(ctx, clipResult.FilePath, platform.ClipMetadata{
+			SessionID:       e.sessionID,
+			ChannelID:       e.channelID,
+			PlayID:          playID,
+			StartTime:       startMs,
+			EndTime:         endMs,
+			DurationSeconds: clipResult.Duration,
+			FileSizeBytes:   clipResult.FileSizeBytes,
+			Tags:            tags,
+		})
+	}
+
+	return result, nil
+}
+
+// uploadClipToPlatform uploads a clip to the video-platform in the background
+func (e *Engine) uploadClipToPlatform(ctx context.Context, filePath string, metadata platform.ClipMetadata) {
+	result, err := e.platform.UploadClip(ctx, filePath, metadata)
+	if err != nil {
+		log.Printf("Failed to upload clip to platform: %v", err)
+		return
+	}
+	log.Printf("Clip uploaded to platform: %s (size: %d bytes)", result.FilePath, result.FileSize)
 }
 
 // GetBuffer returns the ring buffer (for advanced access)
@@ -314,4 +401,15 @@ type ClipResult struct {
 	Duration      float64 `json:"duration"`
 	FileSizeBytes int64   `json:"file_size_bytes"`
 	SegmentCount  int     `json:"segment_count"`
+}
+
+// ClipResultWithTags includes clip result plus metadata
+type ClipResultWithTags struct {
+	ClipResult
+	PlayID    string                 `json:"play_id"`
+	StartTime int64                  `json:"start_time"`
+	EndTime   int64                  `json:"end_time"`
+	Tags      map[string]interface{} `json:"tags,omitempty"`
+	ChannelID string                 `json:"channel_id"`
+	SessionID string                 `json:"session_id"`
 }

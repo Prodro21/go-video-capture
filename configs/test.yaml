@@ -1,0 +1,32 @@
+# Test configuration for API endpoint testing
+# No input device - API server only
+
+input:
+  # Empty - no capture input for testing
+
+buffer:
+  duration: 1m
+  segment_size: 2s
+  path: /tmp/video-capture-test
+  max_size: 100MB
+
+encode:
+  type: software
+  codec: h264
+  preset: ultrafast
+  bitrate: 2000
+  gop: 60
+
+hls:
+  enabled: false
+
+api:
+  host: 127.0.0.1
+  port: 8090
+
+platform:
+  enabled: false
+
+session:
+  session_id: test-session-001
+  channel_id: test-channel-001
