@@ -313,20 +313,21 @@ func (e *Engine) EndGhostClip(playID string) error {
 
 // EndGhostClipAndGenerate ends ghost-clipping and generates the clip
 func (e *Engine) EndGhostClipAndGenerate(ctx context.Context, playID string, tags map[string]interface{}) (interface{}, error) {
-	// End ghost clip to get time range
+	// End ghost clip to get segment info
 	ghostResult, err := e.buffer.EndGhostClip(playID)
 	if err != nil {
 		return nil, err
 	}
 
-	// Generate clip from the time range
-	startMs := ghostResult.StartTime.UnixMilli()
-	endMs := ghostResult.EndTime.UnixMilli()
-
-	clipResult, err := e.buffer.GenerateClip(ctx, startMs, endMs, playID)
+	// Generate clip from the tracked segments (not timestamps)
+	// This works correctly even when segment timestamps don't match wall-clock time
+	clipResult, err := e.buffer.GenerateClipFromSegments(ctx, ghostResult.Segments, playID)
 	if err != nil {
 		return nil, fmt.Errorf("generate clip: %w", err)
 	}
+
+	startMs := ghostResult.StartTime.UnixMilli()
+	endMs := ghostResult.EndTime.UnixMilli()
 
 	result := ClipResultWithTags{
 		ClipResult: ClipResult{

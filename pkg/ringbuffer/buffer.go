@@ -283,6 +283,60 @@ func (b *Buffer) GenerateClip(ctx context.Context, startMs, endMs int64, playID 
 	}, nil
 }
 
+// GenerateClipFromSegments creates a clip from specific segment sequence numbers
+// This is used for ghost clips where we track segments by sequence rather than time
+func (b *Buffer) GenerateClipFromSegments(ctx context.Context, seqNumbers []int, playID string) (*ClipResult, error) {
+	if len(seqNumbers) == 0 {
+		return nil, fmt.Errorf("no segments provided")
+	}
+
+	b.mu.RLock()
+	var segments []*Segment
+	for _, seq := range seqNumbers {
+		if seg, ok := b.segments[seq]; ok {
+			segments = append(segments, seg)
+		}
+	}
+	b.mu.RUnlock()
+
+	if len(segments) == 0 {
+		return nil, fmt.Errorf("no valid segments found for sequences %v", seqNumbers)
+	}
+
+	// Collect segment paths
+	var segPaths []string
+	for _, seg := range segments {
+		segPaths = append(segPaths, seg.FilePath)
+	}
+
+	// Output path
+	outputPath := filepath.Join(b.cfg.Path, "clips", fmt.Sprintf("%s.mp4", playID))
+
+	// Concatenate segments (no trimming needed for ghost clips)
+	if err := b.ffmpeg.ConcatSegments(ctx, b.initSegment, segPaths, outputPath); err != nil {
+		return nil, fmt.Errorf("concat segments: %w", err)
+	}
+
+	// Get file info
+	info, err := os.Stat(outputPath)
+	if err != nil {
+		return nil, fmt.Errorf("stat output: %w", err)
+	}
+
+	// Calculate duration from segments
+	var totalDuration time.Duration
+	for _, seg := range segments {
+		totalDuration += seg.Duration
+	}
+
+	return &ClipResult{
+		FilePath:      outputPath,
+		Duration:      totalDuration.Seconds(),
+		FileSizeBytes: info.Size(),
+		SegmentCount:  len(segments),
+	}, nil
+}
+
 // StartGhostClip begins ghost-clipping for a play
 func (b *Buffer) StartGhostClip(playID string) error {
 	b.ghostMu.Lock()
@@ -317,15 +371,28 @@ func (b *Buffer) EndGhostClip(playID string) (*GhostClipResult, error) {
 		return nil, fmt.Errorf("ghost clip not found: %s", playID)
 	}
 
+	// Get all segments from startSeq to current lastSeq
+	// This handles both real-time capture (where notifyGhostClips adds segments)
+	// and file input (where segments may already exist when ghost clip starts)
+	b.mu.RLock()
+	endSeq := b.lastSeq
+	var segments []int
+	for seq := ghost.StartSeq; seq <= endSeq; seq++ {
+		if _, ok := b.segments[seq]; ok {
+			segments = append(segments, seq)
+		}
+	}
+	b.mu.RUnlock()
+
 	result := &GhostClipResult{
 		PlayID:       playID,
 		StartTime:    ghost.StartTime,
 		EndTime:      time.Now(),
-		SegmentCount: len(ghost.Segments),
-		Segments:     ghost.Segments,
+		SegmentCount: len(segments),
+		Segments:     segments,
 	}
 
-	log.Printf("Ghost clip ended: %s (segments: %d)", playID, len(ghost.Segments))
+	log.Printf("Ghost clip ended: %s (segments: %d, seq %d-%d)", playID, len(segments), ghost.StartSeq, endSeq)
 	delete(b.activeGhosts, playID)
 	return result, nil
 }
