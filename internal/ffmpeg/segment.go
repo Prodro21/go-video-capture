@@ -183,13 +183,14 @@ func (sw *SegmentWriter) buildArgs() []string {
 
 	// CMAF/fMP4 output via HLS muxer with fmp4 segments
 	// Creates init.mp4 + segment_NNNNN.m4s files for instant concatenation
+	// Ring buffer handles segment cleanup - don't let FFmpeg delete segments
 	args = append(args,
 		"-f", "hls",
 		"-hls_time", fmt.Sprintf("%.0f", cfg.SegmentDuration),
 		"-hls_segment_type", "fmp4",
 		"-hls_fmp4_init_filename", "init.mp4",
 		"-hls_segment_filename", filepath.Join(sw.outputPath, "segment_%05d.m4s"),
-		"-hls_flags", "independent_segments+program_date_time",
+		"-hls_flags", "independent_segments+program_date_time+append_list",
 		"-hls_list_size", "0",
 		filepath.Join(sw.outputPath, "playlist.m3u8"),
 	)

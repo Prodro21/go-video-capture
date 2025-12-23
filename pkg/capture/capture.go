@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"time"
 
 	"github.com/video-system/go-video-capture/internal/ffmpeg"
 	"github.com/video-system/go-video-capture/pkg/api"
@@ -285,16 +286,21 @@ func (e *Engine) GenerateClip(ctx context.Context, req interface{}) (interface{}
 	}
 
 	// Upload to platform if configured
+	// Use background context since HTTP request context will be canceled after response
 	if e.platform != nil && e.platform.IsConfigured() {
-		go e.uploadClipToPlatform(ctx, result.FilePath, platform.ClipMetadata{
-			SessionID:       e.sessionID,
-			ChannelID:       e.channelID,
-			PlayID:          clipReq.PlayID,
-			StartTime:       clipReq.StartTime,
-			EndTime:         clipReq.EndTime,
-			DurationSeconds: result.Duration,
-			FileSizeBytes:   result.FileSizeBytes,
-		})
+		uploadCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		go func() {
+			defer cancel()
+			e.uploadClipToPlatform(uploadCtx, result.FilePath, platform.ClipMetadata{
+				SessionID:       e.sessionID,
+				ChannelID:       e.channelID,
+				PlayID:          clipReq.PlayID,
+				StartTime:       clipReq.StartTime,
+				EndTime:         clipReq.EndTime,
+				DurationSeconds: result.Duration,
+				FileSizeBytes:   result.FileSizeBytes,
+			})
+		}()
 	}
 
 	return clipResult, nil
@@ -345,17 +351,22 @@ func (e *Engine) EndGhostClipAndGenerate(ctx context.Context, playID string, tag
 	}
 
 	// Upload to platform if configured
+	// Use background context since HTTP request context will be canceled after response
 	if e.platform != nil && e.platform.IsConfigured() {
-		go e.uploadClipToPlatform(ctx, clipResult.FilePath, platform.ClipMetadata{
-			SessionID:       e.sessionID,
-			ChannelID:       e.channelID,
-			PlayID:          playID,
-			StartTime:       startMs,
-			EndTime:         endMs,
-			DurationSeconds: clipResult.Duration,
-			FileSizeBytes:   clipResult.FileSizeBytes,
-			Tags:            tags,
-		})
+		uploadCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		go func() {
+			defer cancel()
+			e.uploadClipToPlatform(uploadCtx, clipResult.FilePath, platform.ClipMetadata{
+				SessionID:       e.sessionID,
+				ChannelID:       e.channelID,
+				PlayID:          playID,
+				StartTime:       startMs,
+				EndTime:         endMs,
+				DurationSeconds: clipResult.Duration,
+				FileSizeBytes:   clipResult.FileSizeBytes,
+				Tags:            tags,
+			})
+		}()
 	}
 
 	return result, nil
