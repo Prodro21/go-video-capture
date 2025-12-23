@@ -181,16 +181,17 @@ func (sw *SegmentWriter) buildArgs() []string {
 	// Audio (copy or aac)
 	args = append(args, "-c:a", "aac", "-b:a", "128k")
 
-	// Output as standalone MP4 segments using segment muxer
-	// This creates self-contained segments that are easy to concatenate
+	// CMAF/fMP4 output via HLS muxer with fmp4 segments
+	// Creates init.mp4 + segment_NNNNN.m4s files for instant concatenation
 	args = append(args,
-		"-f", "segment",
-		"-segment_time", fmt.Sprintf("%.1f", cfg.SegmentDuration),
-		"-segment_format", "mp4",
-		"-reset_timestamps", "1",
-		"-segment_start_number", "1",
-		"-movflags", "+faststart+frag_keyframe",
-		filepath.Join(sw.outputPath, "segment_%05d.mp4"),
+		"-f", "hls",
+		"-hls_time", fmt.Sprintf("%.0f", cfg.SegmentDuration),
+		"-hls_segment_type", "fmp4",
+		"-hls_fmp4_init_filename", "init.mp4",
+		"-hls_segment_filename", filepath.Join(sw.outputPath, "segment_%05d.m4s"),
+		"-hls_flags", "independent_segments+program_date_time",
+		"-hls_list_size", "0",
+		filepath.Join(sw.outputPath, "playlist.m3u8"),
 	)
 
 	return args
@@ -237,7 +238,7 @@ func (sw *SegmentWriter) watchSegments(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			files, _ := filepath.Glob(filepath.Join(sw.outputPath, "segment_*.mp4"))
+			files, _ := filepath.Glob(filepath.Join(sw.outputPath, "segment_*.m4s"))
 			for _, f := range files {
 				if seen[f] {
 					continue
@@ -252,7 +253,7 @@ func (sw *SegmentWriter) watchSegments(ctx context.Context) {
 				// Parse sequence number from filename
 				base := filepath.Base(f)
 				var seq int
-				fmt.Sscanf(base, "segment_%05d.mp4", &seq)
+				fmt.Sscanf(base, "segment_%05d.m4s", &seq)
 
 				seen[f] = true
 				sw.onSegment(SegmentInfo{
@@ -284,32 +285,45 @@ func (f *FFmpeg) GenerateSegmentsFromFile(ctx context.Context, inputPath, output
 	return sw.Wait()
 }
 
-// ConcatSegments concatenates multiple MP4 segments into a single MP4
-// Uses concat demuxer - segments must be standalone MP4 files
+// ConcatSegments concatenates CMAF/fMP4 segments into a single MP4
+// For fMP4, we combine init.mp4 + segments at binary level, then remux with stream copy
 func (f *FFmpeg) ConcatSegments(ctx context.Context, initPath string, segments []string, outputPath string) error {
 	if len(segments) == 0 {
 		return fmt.Errorf("no segments to concatenate")
 	}
 
-	// Create concat list file
-	tmpList, err := os.CreateTemp("", "concat_*.txt")
+	// Create combined fMP4 file by concatenating init.mp4 + media segments
+	tmpCombined, err := os.CreateTemp("", "combined_*.mp4")
 	if err != nil {
-		return fmt.Errorf("create concat list: %w", err)
+		return fmt.Errorf("create temp file: %w", err)
 	}
-	defer os.Remove(tmpList.Name())
+	defer os.Remove(tmpCombined.Name())
 
-	// Write segment list (no init segment needed for standalone MP4s)
+	// Write init segment first (contains ftyp, moov with codec info)
+	initData, err := os.ReadFile(initPath)
+	if err != nil {
+		return fmt.Errorf("read init segment: %w", err)
+	}
+	if _, err := tmpCombined.Write(initData); err != nil {
+		return fmt.Errorf("write init segment: %w", err)
+	}
+
+	// Append each media segment (contains moof + mdat fragments)
 	for _, seg := range segments {
-		fmt.Fprintf(tmpList, "file '%s'\n", seg)
+		segData, err := os.ReadFile(seg)
+		if err != nil {
+			return fmt.Errorf("read segment %s: %w", seg, err)
+		}
+		if _, err := tmpCombined.Write(segData); err != nil {
+			return fmt.Errorf("write segment: %w", err)
+		}
 	}
-	tmpList.Close()
+	tmpCombined.Close()
 
-	// Use concat demuxer
+	// Remux fMP4 to standard MP4 with stream copy (no re-encoding)
 	args := []string{
 		"-y",
-		"-f", "concat",
-		"-safe", "0",
-		"-i", tmpList.Name(),
+		"-i", tmpCombined.Name(),
 		"-c", "copy",
 		"-movflags", "+faststart",
 		outputPath,
@@ -317,7 +331,7 @@ func (f *FFmpeg) ConcatSegments(ctx context.Context, initPath string, segments [
 
 	cmd := exec.CommandContext(ctx, f.binaryPath, args...)
 	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("ffmpeg concat: %w\noutput: %s", err, output)
+		return fmt.Errorf("ffmpeg remux: %w\noutput: %s", err, output)
 	}
 
 	return nil
