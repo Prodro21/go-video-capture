@@ -17,6 +17,9 @@ type CaptureEngine interface {
 	StartGhostClip(playID string) error
 	EndGhostClip(playID string) error
 	EndGhostClipAndGenerate(ctx context.Context, playID string, tags map[string]interface{}) (interface{}, error)
+	GetHLSPlaylist() ([]byte, error)
+	GetSegmentPath() string
+	GetInitSegmentPath() string
 }
 
 // ServerConfig holds API server configuration
@@ -45,6 +48,9 @@ func NewServer(cfg ServerConfig) *Server {
 	mux.HandleFunc("/api/v1/clip", s.handleClip)
 	mux.HandleFunc("/api/v1/clip/quick", s.handleQuickClip)
 	mux.HandleFunc("/api/v1/buffer/status", s.handleBufferStatus)
+	// HLS streaming endpoints
+	mux.HandleFunc("/hls/live.m3u8", s.handleHLSPlaylist)
+	mux.HandleFunc("/hls/", s.handleHLSSegment)
 
 	s.server = &http.Server{
 		Addr:    fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
@@ -253,4 +259,56 @@ func (s *Server) handleBufferStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	status := s.cfg.Engine.GetStatus()
 	json.NewEncoder(w).Encode(status)
+}
+
+func (s *Server) handleHLSPlaylist(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	playlist, err := s.cfg.Engine.GetHLSPlaylist()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Write(playlist)
+}
+
+func (s *Server) handleHLSSegment(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Extract segment name from path: /hls/segment_00001.m4s or /hls/init.mp4
+	path := r.URL.Path
+	segName := path[len("/hls/"):]
+
+	// Security: prevent directory traversal
+	if len(segName) == 0 || segName[0] == '/' || segName[0] == '.' {
+		http.Error(w, "Invalid segment name", http.StatusBadRequest)
+		return
+	}
+
+	var filePath string
+	if segName == "init.mp4" {
+		filePath = s.cfg.Engine.GetInitSegmentPath()
+	} else {
+		filePath = s.cfg.Engine.GetSegmentPath() + "/" + segName
+	}
+
+	// Set appropriate content type
+	contentType := "video/mp4"
+	if len(segName) > 4 && segName[len(segName)-4:] == ".m4s" {
+		contentType = "video/iso.segment"
+	}
+
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	http.ServeFile(w, r, filePath)
 }

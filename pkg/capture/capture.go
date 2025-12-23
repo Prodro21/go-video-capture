@@ -375,6 +375,44 @@ func (e *Engine) GetBuffer() *ringbuffer.Buffer {
 	return e.buffer
 }
 
+// GetHLSPlaylist generates a live HLS playlist from the ring buffer
+func (e *Engine) GetHLSPlaylist() ([]byte, error) {
+	status := e.buffer.GetStatus()
+	if status.SegmentCount == 0 {
+		return nil, fmt.Errorf("no segments available")
+	}
+
+	// Build HLS playlist
+	var playlist string
+	playlist += "#EXTM3U\n"
+	playlist += "#EXT-X-VERSION:7\n"
+	playlist += fmt.Sprintf("#EXT-X-TARGETDURATION:%d\n", int(e.cfg.Buffer.SegmentSize.Seconds())+1)
+	playlist += fmt.Sprintf("#EXT-X-MEDIA-SEQUENCE:%d\n", status.FirstSeq)
+	playlist += "#EXT-X-MAP:URI=\"init.mp4\"\n"
+
+	// Add segments
+	for seq := status.FirstSeq; seq <= status.LastSeq; seq++ {
+		seg, ok := e.buffer.GetSegment(seq)
+		if !ok {
+			continue
+		}
+		playlist += fmt.Sprintf("#EXTINF:%.3f,\n", seg.Duration.Seconds())
+		playlist += fmt.Sprintf("segment_%05d.m4s\n", seg.Sequence)
+	}
+
+	return []byte(playlist), nil
+}
+
+// GetSegmentPath returns the path where segments are stored
+func (e *Engine) GetSegmentPath() string {
+	return e.cfg.Buffer.Path
+}
+
+// GetInitSegmentPath returns the path to the init segment
+func (e *Engine) GetInitSegmentPath() string {
+	return e.buffer.GetInitSegment()
+}
+
 // Status represents the current engine status
 type Status struct {
 	IsRunning    bool    `json:"is_running"`
