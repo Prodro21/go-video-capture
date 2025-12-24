@@ -1,0 +1,184 @@
+# NDI to SRT Bridge Configuration Example
+# =========================================
+#
+# This config shows how to capture NDI sources using an SRT bridge.
+# Since FFmpeg doesn't have native NDI support, we use a bridge tool
+# to convert NDI to SRT, then capture the SRT stream.
+#
+# WORKFLOW:
+# ┌─────────────┐    ┌─────────────────┐    ┌──────────────────┐
+# │ NDI Source  │───▶│ Bridge (OBS/    │───▶│ go-video-capture │
+# │ (Camera/OBS)│    │ NDI Tools/etc)  │    │ (SRT listener)   │
+# └─────────────┘    └─────────────────┘    └──────────────────┘
+#
+# BRIDGE OPTIONS:
+#
+# 1. OBS Studio + NDI Plugin (Recommended for most users)
+#    - Install OBS + obs-ndi plugin
+#    - Add NDI Source in OBS
+#    - Settings > Stream > Custom > srt://capture-host:9000?mode=caller
+#    - Start streaming
+#
+# 2. FFmpeg with NDI Tools Runtime (if you have NDI Tools installed)
+#    ffmpeg -f libndi_newtek -i "MY-PC (OBS)" \
+#           -c:v libx264 -preset fast -b:v 6000k \
+#           -f mpegts "srt://capture-host:9000?mode=caller"
+#
+# 3. NDI Bridge + MediaMTX
+#    - Run MediaMTX with NDI input enabled
+#    - Output as SRT to go-video-capture
+#
+# 4. vMix, Wirecast, or similar production software
+#    - Add NDI input, output to SRT
+
+# =============================================================================
+# SINGLE CAMERA SETUP (NDI via SRT)
+# =============================================================================
+
+input:
+  type: srt
+  # SRT listener mode - the bridge connects TO this address
+  # Use mode=listener so capture agent waits for incoming connection
+  device: "srt://0.0.0.0:9000?mode=listener&latency=200000"
+  resolution: "1920x1080"
+  framerate: 30
+
+buffer:
+  duration: 30m          # Keep 30 minutes of video
+  segment_size: 2s       # 2-second segments for quick clip generation
+  path: "/var/capture/ndi-camera"
+
+encode:
+  type: software         # or nvenc, videotoolbox, qsv
+  codec: h264
+  preset: fast
+  bitrate: 6000          # 6 Mbps
+
+api:
+  host: "0.0.0.0"
+  port: 8081
+
+session:
+  channel_id: "ndi-main"
+
+platform:
+  enabled: true
+  url: "http://localhost:8080"
+  agent_name: "NDI Bridge Capture"
+  heartbeat_secs: 10
+
+---
+# =============================================================================
+# MULTI-CAMERA SETUP (Multiple NDI sources via SRT)
+# =============================================================================
+# Each NDI source needs its own bridge instance outputting to a unique port
+
+channels:
+  # Camera 1: Main wide angle
+  - id: ndi-wide
+    input:
+      type: srt
+      device: "srt://0.0.0.0:9001?mode=listener&latency=200000"
+      resolution: "1920x1080"
+      framerate: 30
+    buffer:
+      duration: 30m
+      segment_size: 2s
+      path: "/var/capture/multi"
+    encode:
+      codec: h264
+      preset: fast
+      bitrate: 6000
+
+  # Camera 2: Tight/tactical angle
+  - id: ndi-tight
+    input:
+      type: srt
+      device: "srt://0.0.0.0:9002?mode=listener&latency=200000"
+      resolution: "1920x1080"
+      framerate: 30
+    buffer:
+      duration: 30m
+      segment_size: 2s
+      path: "/var/capture/multi"
+    encode:
+      codec: h264
+      preset: fast
+      bitrate: 6000
+
+  # Camera 3: Endzone view
+  - id: ndi-endzone
+    input:
+      type: srt
+      device: "srt://0.0.0.0:9003?mode=listener&latency=200000"
+      resolution: "1920x1080"
+      framerate: 30
+    buffer:
+      duration: 30m
+      segment_size: 2s
+      path: "/var/capture/multi"
+    encode:
+      codec: h264
+      preset: fast
+      bitrate: 6000
+
+buffer:
+  path: "/var/capture/multi"
+
+api:
+  host: "0.0.0.0"
+  port: 8081
+
+platform:
+  enabled: true
+  url: "http://localhost:8080"
+  agent_name: "Multi-NDI Capture Station"
+
+# =============================================================================
+# OBS BRIDGE SETUP INSTRUCTIONS
+# =============================================================================
+#
+# For each NDI source, create an OBS scene:
+#
+# 1. Install OBS and obs-ndi plugin
+#    - macOS: brew install obs obs-ndi
+#    - Windows: Download from obsproject.com + github.com/obs-ndi/obs-ndi
+#
+# 2. Create a new Scene Collection for each camera
+#
+# 3. Add Source > NDI Source > Select your NDI source
+#
+# 4. Configure Output:
+#    - Settings > Output > Output Mode: Advanced
+#    - Streaming tab:
+#      - Encoder: x264 (or NVENC if available)
+#      - Rate Control: CBR
+#      - Bitrate: 6000 kbps
+#
+# 5. Configure Stream:
+#    - Settings > Stream
+#    - Service: Custom...
+#    - Server: srt://CAPTURE_HOST:9001?mode=caller
+#    - (Use 9001, 9002, 9003 for each camera)
+#
+# 6. Start Streaming in OBS
+#
+# The SRT stream will connect to go-video-capture which is listening
+# on the configured ports.
+#
+# =============================================================================
+# QUICK START SCRIPT (for testing with single NDI source)
+# =============================================================================
+#
+# Terminal 1 - Start capture agent:
+#   ./go-video-capture -config configs/ndi-bridge-example.yaml
+#
+# Terminal 2 - Start OBS with NDI source, stream to srt://localhost:9000
+#
+# Terminal 3 - Verify capture:
+#   curl http://localhost:8081/api/v1/channels
+#   curl http://localhost:8081/health
+#
+# Watch HLS stream:
+#   ffplay http://localhost:8081/hls/ndi-main/live.m3u8
+#

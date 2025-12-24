@@ -12,6 +12,7 @@ import (
 
 	"github.com/video-system/go-video-capture/pkg/api"
 	"github.com/video-system/go-video-capture/pkg/capture"
+	"github.com/video-system/go-video-capture/pkg/ndi"
 	"github.com/video-system/go-video-capture/pkg/platform"
 )
 
@@ -116,12 +117,15 @@ func registerAgent(ctx context.Context, client *platform.Client, cfg *capture.Co
 		agentURL = fmt.Sprintf("http://%s:%d", cfg.API.Host, cfg.API.Port)
 	}
 
-	// Build capabilities based on config
+	// Check NDI support dynamically
+	ndiSupported := ndi.CheckSupport(ctx)
+
+	// Build capabilities based on config and system detection
 	capabilities := platform.AgentCapabilities{
 		CanCaptureSRT:   true, // Supported via FFmpeg
 		CanCaptureRTSP:  true,
 		CanCaptureRTMP:  true,
-		CanCaptureNDI:   false, // Would need NDI SDK
+		CanCaptureNDI:   ndiSupported,
 		CanCaptureUSB:   true,
 		SupportedCodecs: []string{"h264", "hevc"},
 		MaxResolution:   "3840x2160",

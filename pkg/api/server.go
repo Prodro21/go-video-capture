@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/video-system/go-video-capture/pkg/ndi"
 )
 
 // ChannelInterface defines operations available on a single channel
@@ -72,6 +74,10 @@ func NewServer(cfg ServerConfig) *Server {
 	mux.HandleFunc("/api/v1/clip", s.handleLegacyClip)
 	mux.HandleFunc("/api/v1/clip/quick", s.handleLegacyQuickClip)
 	mux.HandleFunc("/api/v1/buffer/status", s.handleLegacyBufferStatus)
+
+	// NDI discovery routes
+	mux.HandleFunc("/api/v1/ndi/sources", s.handleNDISources)
+	mux.HandleFunc("/api/v1/ndi/support", s.handleNDISupport)
 
 	s.server = &http.Server{
 		Addr:    fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
@@ -445,4 +451,48 @@ func (s *Server) handleLegacyBufferStatus(w http.ResponseWriter, r *http.Request
 		return
 	}
 	s.handleChannelStatus(w, r, ch)
+}
+
+// handleNDISources discovers NDI sources on the network
+func (s *Server) handleNDISources(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Check if NDI is supported first
+	if !ndi.CheckSupport(r.Context()) {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"supported": false,
+			"sources":   []ndi.Source{},
+			"message":   "FFmpeg is not compiled with NDI support (libndi_newtek)",
+		})
+		return
+	}
+
+	// Discover NDI sources
+	sources, err := ndi.DiscoverSources(r.Context())
+	if err != nil {
+		http.Error(w, fmt.Sprintf("NDI discovery failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"supported": true,
+		"sources":   sources,
+	})
+}
+
+// handleNDISupport checks if NDI is supported by FFmpeg
+func (s *Server) handleNDISupport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	supported := ndi.CheckSupport(r.Context())
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"supported": supported,
+	})
 }

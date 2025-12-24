@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/video-system/go-video-capture/internal/ffmpeg"
+	"github.com/video-system/go-video-capture/pkg/ndi"
 	"github.com/video-system/go-video-capture/pkg/platform"
 	"github.com/video-system/go-video-capture/pkg/ringbuffer"
 )
@@ -22,6 +23,9 @@ type Channel struct {
 	buffer   *ringbuffer.Buffer
 	writer   *ffmpeg.SegmentWriter
 	platform *platform.Client
+
+	// Native NDI capture (used when input type is "ndi")
+	ndiCapture *ndi.Capture
 
 	mu          sync.RWMutex
 	isRunning   bool
@@ -151,9 +155,14 @@ func (ch *Channel) Stop() {
 	log.Printf("[%s] Channel stopped", ch.id)
 }
 
-// startCapture starts the FFmpeg segment writer
+// startCapture starts the FFmpeg segment writer or native NDI capture
 func (ch *Channel) startCapture() error {
 	cfg := ch.cfg
+
+	// Handle NDI with native capture
+	if cfg.Input.Type == "ndi" {
+		return ch.startNDICapture()
+	}
 
 	// Build input string based on type
 	var input string
@@ -229,13 +238,59 @@ func (ch *Channel) startCapture() error {
 	return nil
 }
 
-// stopCapture stops the FFmpeg segment writer
+// startNDICapture starts native NDI capture
+func (ch *Channel) startNDICapture() error {
+	cfg := ch.cfg
+
+	// Check if NDI SDK is available
+	if !ndi.IsAvailable() {
+		return fmt.Errorf("NDI SDK not available - please install NDI SDK from https://ndi.video/tools/")
+	}
+
+	log.Printf("[%s] Starting native NDI capture: %s", ch.id, cfg.Input.Device)
+
+	// Create NDI capture
+	capture, err := ndi.NewCapture(ndi.CaptureConfig{
+		SourceName:      cfg.Input.Device,
+		OutputDir:       ch.basePath,
+		SegmentDuration: cfg.Buffer.SegmentSize.Seconds(),
+		Codec:           cfg.Encode.Codec,
+		Preset:          cfg.Encode.Preset,
+		Bitrate:         cfg.Encode.Bitrate,
+	})
+	if err != nil {
+		return fmt.Errorf("create NDI capture: %w", err)
+	}
+
+	ch.ndiCapture = capture
+
+	// Start capture
+	if err := capture.Start(ch.ctx); err != nil {
+		return fmt.Errorf("start NDI capture: %w", err)
+	}
+
+	// Set init segment path
+	ch.buffer.SetInitSegment(filepath.Join(ch.basePath, "init.mp4"))
+
+	ch.mu.Lock()
+	ch.isCapturing = true
+	ch.mu.Unlock()
+
+	log.Printf("[%s] NDI capture started: %s -> %s", ch.id, cfg.Input.Device, ch.basePath)
+	return nil
+}
+
+// stopCapture stops the FFmpeg segment writer or NDI capture
 func (ch *Channel) stopCapture() {
 	if ch.writer != nil {
 		ch.writer.Stop()
 		ch.writer = nil
-		ch.isCapturing = false
 	}
+	if ch.ndiCapture != nil {
+		ch.ndiCapture.Stop()
+		ch.ndiCapture = nil
+	}
+	ch.isCapturing = false
 }
 
 // SetSession updates the session ID

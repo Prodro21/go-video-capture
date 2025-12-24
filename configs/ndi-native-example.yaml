@@ -1,0 +1,137 @@
+# Native NDI Capture Configuration
+# =================================
+#
+# This config uses native NDI SDK support (no bridge required).
+# Requires NDI SDK to be installed on the system.
+#
+# See docs/NDI_SETUP.md for installation instructions.
+#
+# WORKFLOW:
+# ┌─────────────┐                    ┌──────────────────┐
+# │ NDI Source  │───── Network ─────▶│ go-video-capture │
+# │ (Camera/OBS)│                    │ (Native NDI SDK) │
+# └─────────────┘                    └──────────────────┘
+#
+# No bridge software needed!
+
+# Discover sources first:
+#   curl http://localhost:8081/api/v1/ndi/sources
+
+input:
+  type: ndi
+  # Exact NDI source name (case-sensitive, including parentheses)
+  # Examples:
+  #   "MY-PC (OBS)"
+  #   "PTZ-CAMERA (Channel 1)"
+  #   "LAPTOP (Test Pattern 1)"
+  device: "MY-PC (OBS)"
+  resolution: "1920x1080"
+  framerate: 30
+
+buffer:
+  duration: 30m          # Keep 30 minutes in ring buffer
+  segment_size: 2s       # 2-second segments
+  path: "/var/capture/ndi"
+
+encode:
+  type: software         # or nvenc, videotoolbox, qsv
+  codec: h264
+  preset: fast
+  bitrate: 6000          # 6 Mbps
+
+api:
+  host: "0.0.0.0"
+  port: 8081
+
+session:
+  channel_id: "ndi-main"
+
+platform:
+  enabled: true
+  url: "http://localhost:8080"
+  agent_name: "NDI Capture Agent"
+  heartbeat_secs: 10
+
+---
+# =============================================================================
+# MULTI-CAMERA NATIVE NDI
+# =============================================================================
+# Each NDI source captured natively - no bridges needed
+
+channels:
+  # Camera 1: Wide angle
+  - id: ndi-wide
+    input:
+      type: ndi
+      device: "CAMERA-1 (Wide)"
+    buffer:
+      duration: 30m
+      segment_size: 2s
+      path: "/var/capture/multi"
+    encode:
+      codec: h264
+      preset: fast
+      bitrate: 6000
+
+  # Camera 2: Tight/tactical
+  - id: ndi-tight
+    input:
+      type: ndi
+      device: "CAMERA-2 (Tight)"
+    buffer:
+      duration: 30m
+      segment_size: 2s
+      path: "/var/capture/multi"
+    encode:
+      codec: h264
+      preset: fast
+      bitrate: 6000
+
+  # Camera 3: Endzone
+  - id: ndi-endzone
+    input:
+      type: ndi
+      device: "CAMERA-3 (Endzone)"
+    buffer:
+      duration: 30m
+      segment_size: 2s
+      path: "/var/capture/multi"
+    encode:
+      codec: h264
+      preset: fast
+      bitrate: 6000
+
+buffer:
+  path: "/var/capture/multi"
+
+api:
+  host: "0.0.0.0"
+  port: 8081
+
+platform:
+  enabled: true
+  url: "http://localhost:8080"
+  agent_name: "Multi-NDI Capture Station"
+
+# =============================================================================
+# QUICK START
+# =============================================================================
+#
+# 1. Install NDI SDK:
+#    - macOS: Download "NDI SDK for Apple" from ndi.video/tools
+#    - Linux: Download "NDI SDK for Linux", copy libs to /usr/lib
+#    - Windows: Install "NDI SDK" from ndi.video
+#
+# 2. Build with CGO:
+#    CGO_ENABLED=1 go build -o capture ./cmd/capture
+#
+# 3. Discover NDI sources:
+#    curl http://localhost:8081/api/v1/ndi/sources
+#
+# 4. Update device name in this config with actual source name
+#
+# 5. Start capture:
+#    ./capture -config configs/ndi-native-example.yaml
+#
+# 6. Watch HLS stream:
+#    ffplay http://localhost:8081/hls/ndi-main/live.m3u8
