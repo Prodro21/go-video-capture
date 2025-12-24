@@ -32,8 +32,8 @@ func (c *Config) IsMultiChannel() bool {
 
 // InputConfig configures the video input source
 type InputConfig struct {
-	Type       string `yaml:"type"`       // decklink, ndi, v4l2, avfoundation, dshow, screen
-	Device     string `yaml:"device"`     // Device identifier
+	Type       string `yaml:"type"`       // srt, rtsp, rtmp, file, decklink, v4l2, avfoundation, dshow, screen
+	Device     string `yaml:"device"`     // Device identifier or URL (e.g., srt://host:port)
 	Resolution string `yaml:"resolution"` // 1920x1080, 3840x2160
 	Framerate  int    `yaml:"framerate"`  // 30, 60
 }
@@ -73,6 +73,11 @@ type PlatformConfig struct {
 	Enabled bool   `yaml:"enabled"`
 	URL     string `yaml:"url"`
 	APIKey  string `yaml:"api_key"`
+
+	// Agent registration
+	AgentID        string `yaml:"agent_id"`        // Unique agent identifier
+	AgentName      string `yaml:"agent_name"`      // Human-readable agent name
+	HeartbeatSecs  int    `yaml:"heartbeat_secs"`  // Heartbeat interval (default: 10)
 }
 
 // SessionConfig holds runtime session info (set by operator-console)

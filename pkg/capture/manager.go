@@ -209,3 +209,29 @@ func (m *Manager) ChannelCount() int {
 	defer m.mu.RUnlock()
 	return len(m.channels)
 }
+
+// IsRecording returns true if any channel is currently recording
+func (m *Manager) IsRecording() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	for _, ch := range m.channels {
+		if ch.IsRecording() {
+			return true
+		}
+	}
+	return false
+}
+
+// GetError returns the first error from any channel, or nil if no errors
+func (m *Manager) GetError() error {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	for _, ch := range m.channels {
+		if err := ch.GetError(); err != nil {
+			return err
+		}
+	}
+	return nil
+}

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -21,7 +22,9 @@ type SegmentWriter struct {
 	outputPath  string
 	onSegment   func(SegmentInfo)
 
-	cancel context.CancelFunc
+	cancel   context.CancelFunc
+	lastErr  error
+	errMutex sync.RWMutex
 }
 
 // SegmentConfig holds configuration for segment generation
@@ -207,9 +210,10 @@ func (sw *SegmentWriter) monitorOutput(scanner *bufio.Scanner) {
 	for scanner.Scan() {
 		line := scanner.Text()
 
-		// Log errors
+		// Log errors and track them
 		if strings.Contains(line, "Error") || strings.Contains(line, "error") {
 			log.Printf("FFmpeg: %s", line)
+			sw.setError(fmt.Errorf("FFmpeg error: %s", line))
 		}
 
 		// Parse progress (optional - for monitoring)
@@ -394,4 +398,18 @@ func (f *FFmpeg) ListInputDevices(ctx context.Context) (string, error) {
 	cmd := exec.CommandContext(ctx, f.binaryPath, args...)
 	output, _ := cmd.CombinedOutput() // This will "fail" but output device list
 	return string(output), nil
+}
+
+// GetError returns the last error encountered by the segment writer
+func (sw *SegmentWriter) GetError() error {
+	sw.errMutex.RLock()
+	defer sw.errMutex.RUnlock()
+	return sw.lastErr
+}
+
+// setError sets the last error
+func (sw *SegmentWriter) setError(err error) {
+	sw.errMutex.Lock()
+	defer sw.errMutex.Unlock()
+	sw.lastErr = err
 }

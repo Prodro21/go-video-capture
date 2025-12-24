@@ -58,6 +58,64 @@ type SegmentNotification struct {
 	IsFinal    bool   `json:"is_final"`
 }
 
+// AgentStatus represents the status of a capture agent
+type AgentStatus string
+
+const (
+	AgentStatusOnline    AgentStatus = "online"
+	AgentStatusRecording AgentStatus = "recording"
+	AgentStatusError     AgentStatus = "error"
+	AgentStatusOffline   AgentStatus = "offline"
+)
+
+// AgentCapabilities describes what a capture agent can do
+type AgentCapabilities struct {
+	CanCaptureSRT   bool     `json:"can_capture_srt"`
+	CanCaptureRTSP  bool     `json:"can_capture_rtsp"`
+	CanCaptureRTMP  bool     `json:"can_capture_rtmp"`
+	CanCaptureNDI   bool     `json:"can_capture_ndi"`
+	CanCaptureUSB   bool     `json:"can_capture_usb"`
+	SupportedCodecs []string `json:"supported_codecs"`
+	MaxResolution   string   `json:"max_resolution"`
+	MaxBitrate      int      `json:"max_bitrate"`
+}
+
+// RegisterAgentRequest represents a request to register an agent
+type RegisterAgentRequest struct {
+	ID           string            `json:"id"`
+	Name         string            `json:"name"`
+	URL          string            `json:"url"`
+	ChannelID    string            `json:"channel_id,omitempty"`
+	Capabilities AgentCapabilities `json:"capabilities"`
+	Version      string            `json:"version"`
+	Hostname     string            `json:"hostname"`
+}
+
+// AgentHeartbeatRequest represents a heartbeat update
+type AgentHeartbeatRequest struct {
+	Status       AgentStatus `json:"status"`
+	SessionID    string      `json:"session_id,omitempty"`
+	ChannelID    string      `json:"channel_id,omitempty"`
+	ErrorMessage string      `json:"error_message,omitempty"`
+}
+
+// Agent represents a registered capture agent
+type Agent struct {
+	ID           string            `json:"id"`
+	Name         string            `json:"name"`
+	URL          string            `json:"url"`
+	ChannelID    string            `json:"channel_id,omitempty"`
+	SessionID    string            `json:"session_id,omitempty"`
+	Status       AgentStatus       `json:"status"`
+	Capabilities AgentCapabilities `json:"capabilities"`
+	Version      string            `json:"version"`
+	Hostname     string            `json:"hostname"`
+	LastSeenAt   time.Time         `json:"last_seen_at"`
+	ErrorMessage string            `json:"error_message,omitempty"`
+	CreatedAt    time.Time         `json:"created_at"`
+	UpdatedAt    time.Time         `json:"updated_at"`
+}
+
 // New creates a new platform client
 func New(cfg Config) *Client {
 	return &Client{
@@ -243,4 +301,94 @@ func (c *Client) NotifySegmentReady(ctx context.Context, notification SegmentNot
 	}
 
 	return nil
+}
+
+// RegisterAgent registers this capture agent with the platform
+func (c *Client) RegisterAgent(ctx context.Context, req RegisterAgentRequest) (*Agent, error) {
+	if !c.IsConfigured() {
+		return nil, fmt.Errorf("platform client not configured")
+	}
+
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/api/v1/agents/register", c.baseURL)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+
+	httpReq.Header.Set("Content-Type", "application/json")
+	if c.apiKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("execute request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		return nil, fmt.Errorf("registration failed (status %d): %s", resp.StatusCode, string(respBody))
+	}
+
+	var agent Agent
+	if err := json.Unmarshal(respBody, &agent); err != nil {
+		return nil, fmt.Errorf("parse response: %w", err)
+	}
+
+	return &agent, nil
+}
+
+// Heartbeat sends a heartbeat to the platform to update agent status
+func (c *Client) Heartbeat(ctx context.Context, agentID string, req AgentHeartbeatRequest) (*Agent, error) {
+	if !c.IsConfigured() {
+		return nil, nil // Silent skip if platform not configured
+	}
+
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/api/v1/agents/%s/heartbeat", c.baseURL, agentID)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+
+	httpReq.Header.Set("Content-Type", "application/json")
+	if c.apiKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("execute request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("heartbeat failed (status %d): %s", resp.StatusCode, string(respBody))
+	}
+
+	var agent Agent
+	if err := json.Unmarshal(respBody, &agent); err != nil {
+		return nil, fmt.Errorf("parse response: %w", err)
+	}
+
+	return &agent, nil
 }

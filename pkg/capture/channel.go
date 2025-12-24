@@ -162,6 +162,16 @@ func (ch *Channel) startCapture() error {
 	switch cfg.Input.Type {
 	case "file":
 		input = cfg.Input.Device
+	case "srt":
+		// SRT input - Device should be full URL like srt://host:port
+		input = cfg.Input.Device
+		// No inputFormat needed - FFmpeg auto-detects from URL
+	case "rtsp":
+		// RTSP input - Device should be full URL like rtsp://host:port/path
+		input = cfg.Input.Device
+	case "rtmp":
+		// RTMP input - Device should be full URL like rtmp://host:port/app/stream
+		input = cfg.Input.Device
 	case "screen":
 		input = "0:none"
 		inputFormat = "avfoundation"
@@ -432,6 +442,25 @@ func (ch *Channel) GetSegmentPath() string {
 // GetInitSegmentPath returns the path to the init segment
 func (ch *Channel) GetInitSegmentPath() string {
 	return ch.buffer.GetInitSegment()
+}
+
+// IsRecording returns true if the channel is actively capturing
+func (ch *Channel) IsRecording() bool {
+	ch.mu.RLock()
+	defer ch.mu.RUnlock()
+	return ch.isCapturing
+}
+
+// GetError returns the current error state, if any
+func (ch *Channel) GetError() error {
+	ch.mu.RLock()
+	defer ch.mu.RUnlock()
+
+	// Check if the segment writer has errors
+	if ch.writer != nil {
+		return ch.writer.GetError()
+	}
+	return nil
 }
 
 // ChannelStatus represents the status of a channel

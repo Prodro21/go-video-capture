@@ -1,0 +1,42 @@
+# Local test configuration - uses SRT input
+# Run with: ./capture -config configs/local-test.yaml
+
+input:
+  type: srt                          # SRT stream input
+  device: "srt://172.16.101.21:9000" # SRT source URL
+  resolution: 1920x1080
+  framerate: 30
+
+buffer:
+  duration: 5m           # Keep 5 minutes for testing
+  segment_size: 2s       # 2-second segments
+  path: /tmp/video-capture/buffer
+  max_size: 2GB
+
+encode:
+  type: software         # Use software encoding (works on all Macs)
+  codec: h264
+  preset: ultrafast      # Fast for testing
+  bitrate: 3000          # 3 Mbps
+  gop: 60                # Keyframe every 2 seconds at 30fps
+
+hls:
+  enabled: true
+  path: /tmp/video-capture/hls
+  port: 8090             # HLS preview on port 8090
+
+api:
+  host: "0.0.0.0"
+  port: 9000             # Control API on port 9000
+
+platform:
+  enabled: true
+  url: "http://localhost:8080"  # video-platform API
+  api_key: ""
+  agent_id: "endzone-agent"     # Unique agent identifier
+  agent_name: "End Zone Camera" # Human-readable name
+  heartbeat_secs: 10            # Heartbeat interval
+
+session:
+  session_id: ""         # Set by operator-console
+  channel_id: "endzone"  # Default channel
