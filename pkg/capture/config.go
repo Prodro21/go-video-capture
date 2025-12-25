@@ -53,6 +53,7 @@ type EncodeConfig struct {
 	Preset  string `yaml:"preset"`  // ultrafast, fast, medium
 	Bitrate int    `yaml:"bitrate"` // Target bitrate in kbps
 	GOP     int    `yaml:"gop"`     // Keyframe interval (frames)
+	BFrames int    `yaml:"bframes"` // Number of B-frames (0 = disabled for cleaner cuts)
 }
 
 // HLSConfig configures local HLS output

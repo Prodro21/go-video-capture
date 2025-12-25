@@ -275,9 +275,15 @@ func (b *Buffer) GenerateClip(ctx context.Context, startMs, endMs int64, playID 
 		return nil, fmt.Errorf("stat output: %w", err)
 	}
 
+	// Get actual duration from ffprobe
+	actualDuration := endTime.Sub(startTime).Seconds()
+	if videoInfo, err := b.ffmpeg.GetVideoInfo(ctx, outputPath); err == nil && videoInfo.Duration > 0 {
+		actualDuration = videoInfo.Duration
+	}
+
 	return &ClipResult{
 		FilePath:      outputPath,
-		Duration:      endTime.Sub(startTime).Seconds(),
+		Duration:      actualDuration,
 		FileSizeBytes: info.Size(),
 		SegmentCount:  len(segments),
 	}, nil
@@ -323,15 +329,22 @@ func (b *Buffer) GenerateClipFromSegments(ctx context.Context, seqNumbers []int,
 		return nil, fmt.Errorf("stat output: %w", err)
 	}
 
-	// Calculate duration from segments
-	var totalDuration time.Duration
-	for _, seg := range segments {
-		totalDuration += seg.Duration
+	// Get actual duration from ffprobe (more accurate than segment count * 2s)
+	var actualDuration float64
+	if videoInfo, err := b.ffmpeg.GetVideoInfo(ctx, outputPath); err == nil && videoInfo.Duration > 0 {
+		actualDuration = videoInfo.Duration
+	} else {
+		// Fallback to estimated duration from segments
+		var totalDuration time.Duration
+		for _, seg := range segments {
+			totalDuration += seg.Duration
+		}
+		actualDuration = totalDuration.Seconds()
 	}
 
 	return &ClipResult{
 		FilePath:      outputPath,
-		Duration:      totalDuration.Seconds(),
+		Duration:      actualDuration,
 		FileSizeBytes: info.Size(),
 		SegmentCount:  len(segments),
 	}, nil

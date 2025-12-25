@@ -48,6 +48,23 @@ type Server struct {
 	server *http.Server
 }
 
+// corsMiddleware wraps a handler with CORS headers
+func corsMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		w.Header().Set("Access-Control-Max-Age", "86400")
+
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		next(w, r)
+	}
+}
+
 // NewServer creates a new API server
 func NewServer(cfg ServerConfig) *Server {
 	s := &Server{cfg: cfg}
@@ -55,29 +72,29 @@ func NewServer(cfg ServerConfig) *Server {
 	mux := http.NewServeMux()
 
 	// Health check
-	mux.HandleFunc("/health", s.handleHealth)
+	mux.HandleFunc("/health", corsMiddleware(s.handleHealth))
 
 	// List all channels
-	mux.HandleFunc("/api/v1/channels", s.handleListChannels)
+	mux.HandleFunc("/api/v1/channels", corsMiddleware(s.handleListChannels))
 
 	// Channel-specific routes (must come before legacy routes for proper matching)
-	mux.HandleFunc("/api/v1/channels/", s.handleChannelRoute)
+	mux.HandleFunc("/api/v1/channels/", corsMiddleware(s.handleChannelRoute))
 
 	// HLS per-channel routes
-	mux.HandleFunc("/hls/", s.handleHLS)
+	mux.HandleFunc("/hls/", corsMiddleware(s.handleHLS))
 
 	// Legacy single-channel routes (backwards compatible)
-	mux.HandleFunc("/api/v1/status", s.handleLegacyStatus)
-	mux.HandleFunc("/api/v1/config", s.handleLegacyConfig)
-	mux.HandleFunc("/api/v1/mark/in", s.handleLegacyMarkIn)
-	mux.HandleFunc("/api/v1/mark/out", s.handleLegacyMarkOut)
-	mux.HandleFunc("/api/v1/clip", s.handleLegacyClip)
-	mux.HandleFunc("/api/v1/clip/quick", s.handleLegacyQuickClip)
-	mux.HandleFunc("/api/v1/buffer/status", s.handleLegacyBufferStatus)
+	mux.HandleFunc("/api/v1/status", corsMiddleware(s.handleLegacyStatus))
+	mux.HandleFunc("/api/v1/config", corsMiddleware(s.handleLegacyConfig))
+	mux.HandleFunc("/api/v1/mark/in", corsMiddleware(s.handleLegacyMarkIn))
+	mux.HandleFunc("/api/v1/mark/out", corsMiddleware(s.handleLegacyMarkOut))
+	mux.HandleFunc("/api/v1/clip", corsMiddleware(s.handleLegacyClip))
+	mux.HandleFunc("/api/v1/clip/quick", corsMiddleware(s.handleLegacyQuickClip))
+	mux.HandleFunc("/api/v1/buffer/status", corsMiddleware(s.handleLegacyBufferStatus))
 
 	// NDI discovery routes
-	mux.HandleFunc("/api/v1/ndi/sources", s.handleNDISources)
-	mux.HandleFunc("/api/v1/ndi/support", s.handleNDISupport)
+	mux.HandleFunc("/api/v1/ndi/sources", corsMiddleware(s.handleNDISources))
+	mux.HandleFunc("/api/v1/ndi/support", corsMiddleware(s.handleNDISupport))
 
 	s.server = &http.Server{
 		Addr:    fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),

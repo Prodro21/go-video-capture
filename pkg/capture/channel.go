@@ -207,6 +207,8 @@ func (ch *Channel) startCapture() error {
 		Codec:           cfg.Encode.Codec,
 		Preset:          cfg.Encode.Preset,
 		Bitrate:         cfg.Encode.Bitrate,
+		GOP:             cfg.Encode.GOP,
+		BFrames:         cfg.Encode.BFrames,
 		SegmentDuration: cfg.Buffer.SegmentSize.Seconds(),
 		OutputDir:       ch.basePath,
 	})

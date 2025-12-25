@@ -44,6 +44,7 @@ type SegmentConfig struct {
 	// Segment settings
 	SegmentDuration float64 // Seconds per segment (default: 2)
 	GOP             int     // Keyframe interval in frames (0 = auto based on segment duration)
+	BFrames         int     // Number of B-frames (-1 = default, 0 = disabled)
 
 	// Output
 	OutputDir   string // Directory for segments
@@ -176,6 +177,11 @@ func (sw *SegmentWriter) buildArgs() []string {
 	args = append(args, "-keyint_min", fmt.Sprintf("%d", gop))
 	args = append(args, "-sc_threshold", "0")
 
+	// B-frames setting (0 = disabled for cleaner segment cuts)
+	if cfg.BFrames >= 0 {
+		args = append(args, "-bf", fmt.Sprintf("%d", cfg.BFrames))
+	}
+
 	// Scaling if specified
 	if cfg.Width > 0 && cfg.Height > 0 {
 		args = append(args, "-vf", fmt.Sprintf("scale=%d:%d", cfg.Width, cfg.Height))
@@ -189,7 +195,7 @@ func (sw *SegmentWriter) buildArgs() []string {
 	// Ring buffer handles segment cleanup - don't let FFmpeg delete segments
 	args = append(args,
 		"-f", "hls",
-		"-hls_time", fmt.Sprintf("%.0f", cfg.SegmentDuration),
+		"-hls_time", fmt.Sprintf("%g", cfg.SegmentDuration),
 		"-hls_segment_type", "fmp4",
 		"-hls_fmp4_init_filename", "init.mp4",
 		"-hls_segment_filename", filepath.Join(sw.outputPath, "segment_%05d.m4s"),
